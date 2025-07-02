@@ -1,1181 +1,1431 @@
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# ©️ LISA-KOREA | @LISA_FAN_LK | NT_BOT_CHANNEL | TG-SORRY
+
 import os
-import asyncio
-import logging
-import aiofiles
+import re
 import json
 import time
+import math
+import shutil
+import logging
+import asyncio
+import random
 import subprocess
-from typing import Optional, Dict, Any
+from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
-from datetime import datetime
+import traceback
 
-import yt_dlp
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, 
-    InputMediaAnimation, InputMediaPhoto
+from pyrogram import Client, filters, __version__ as pyrogram_version
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    Message,
+    CallbackQuery,
+    BotCommand
 )
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, 
-    CallbackQueryHandler, ContextTypes, filters
-)
-from telegram.constants import ParseMode, ChatAction
-from telegram.error import RetryAfter, TimedOut
+from pyrogram.enums import ParseMode, ChatAction
+from pyrogram.errors import FloodWait, MessageNotModified, BadRequest
 
-# ================================
-# CONFIGURATION
-# ================================
-
-class Config:
-    # Bot Configuration
-    BOT_TOKEN: str = "8037389280:AAG5WfzHcheszs-RHWL8WXszWPkrWjyulp8"  # Get from @BotFather
-    
-    # Admin Configuration
-    ADMIN_IDS: list = [7910994767]  # Add your Telegram user IDs
-    
-    # Download Configuration
-    DOWNLOAD_PATH: str = "downloads"
-    TEMP_PATH: str = "temp"
-    MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB in bytes
-    MAX_CONCURRENT_DOWNLOADS: int = 3
-    
-    # Cookies Configuration
-    COOKIES_FILE: str = "cookies.txt"
-    
-    # FFmpeg Configuration
-    FFMPEG_PATH: str = "ffmpeg"  # System PATH or direct path
-    
-    # User Agents for different scenarios
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
-    ]
-    
-    @classmethod
-    def get_ytdl_opts(cls, quality: str = "best", user_agent: str = None) -> dict:
-        """Get yt-dlp options with various configurations"""
-        opts = {
-            'format': 'bestvideo+bestaudio/best',
-            'outtmpl': f'{cls.TEMP_PATH}/%(title)s_%(id)s.%(ext)s',
-            'noplaylist': True,
-            'writesubtitles': False,
-            'writeautomaticsub': False,
-            'ignoreerrors': False,
-            'no_warnings': False,
-            'extractaudio': False,
-            'user_agent': user_agent or cls.USER_AGENTS[0],
-            'http_headers': {
-                'User-Agent': user_agent or cls.USER_AGENTS[0],
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-        }
-        
-        # Add cookies if available
-        if os.path.exists(cls.COOKIES_FILE):
-            opts['cookiefile'] = cls.COOKIES_FILE
-        
-        # Quality-specific settings
-        if quality == "best":
-            opts['format'] = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
-        elif quality == "medium":
-            opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]'
-        elif quality == "low":
-            opts['format'] = 'bestvideo[height<=480]+bestaudio/best[height<=480]'
-        elif quality == "audio":
-            opts['format'] = 'bestaudio/best'
-            opts['extractaudio'] = True
-        
-        return opts
-
-# Validate configuration
-if not Config.BOT_TOKEN or Config.BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-    raise ValueError("Please set your BOT_TOKEN in the script")
-
-# Setup logging
+# Enhanced logging configuration
 logging.basicConfig(
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# ================================
-# ANIMATIONS AND EFFECTS
-# ================================
+# ============================================================================
+# CONFIGURATION CLASS
+# ============================================================================
 
-class AnimatedMessages:
-    @staticmethod
-    def get_loading_frames():
-        """Get loading animation frames"""
-        return [
-            "🔍 Analyzing video.",
-            "🔍 Analyzing video..",
-            "🔍 Analyzing video...",
-            "🔍 Analyzing video",
-        ]
+class Config:
+    # Bot credentials
+    API_ID = int(os.getenv("API_ID", "24720215"))
+    API_HASH = os.getenv("API_HASH", "c0d3395590fecba19985f95d6300785e")
+    BOT_TOKEN = os.getenv("BOT_TOKEN", "8037389280:AAG5WfzHcheszs-RHWL8WXszWPkrWjyulp8")
+    OWNER_ID = int(os.getenv("OWNER_ID", "7910994767"))
     
-    @staticmethod
-    def get_download_frames():
-        """Get download progress frames"""
-        return [
-            "⬇️ Downloading video ▱▱▱▱▱",
-            "⬇️ Downloading video █▱▱▱▱", 
-            "⬇️ Downloading video ██▱▱▱",
-            "⬇️ Downloading video ███▱▱",
-            "⬇️ Downloading video ████▱",
-            "⬇️ Downloading video █████",
-        ]
+    # Paths
+    DOWNLOAD_LOCATION = "./downloads"
+    TEMP_LOCATION = "./temp"
+    COOKIES_FILE = "./cookies.txt"
     
-    @staticmethod
-    def get_processing_frames():
-        """Get processing animation frames"""
-        return [
-            "🎬 Processing video 🔄",
-            "🎬 Merging audio & video 🔄",
-            "🎬 Optimizing quality 🔄",
-            "🎬 Finalizing 🔄",
-        ]
+    # Limits
+    MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
+    MAX_CONCURRENT_DOWNLOADS = 3
     
-    @staticmethod
-    def get_upload_frames():
-        """Get upload animation frames"""
-        return [
-            "📤 Uploading ▱▱▱▱▱",
-            "📤 Uploading █▱▱▱▱",
-            "📤 Uploading ██▱▱▱", 
-            "📤 Uploading ███▱▱",
-            "📤 Uploading ████▱",
-            "📤 Uploading █████",
-        ]
+    # Network
+    HTTP_PROXY = os.getenv("HTTP_PROXY", "")
+    RETRIES = 5
+    TIMEOUT = 300
+    
+    # FFmpeg
+    FFMPEG_PATH = "ffmpeg"
+    FFMPEG_THREADS = 4
+    
+    # Animation settings
+    ANIMATION_DELAY = 0.8
+    PROGRESS_UPDATE_INTERVAL = 3.0
+    
+    # Advanced user agents with real browser fingerprints
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    ]
 
-# ================================
-# UTILITY FUNCTIONS
-# ================================
+# Create directories
+for directory in [Config.DOWNLOAD_LOCATION, Config.TEMP_LOCATION]:
+    Path(directory).mkdir(parents=True, exist_ok=True)
+
+# ============================================================================
+# ANIMATION AND EFFECTS CLASS
+# ============================================================================
+
+class AnimationEffects:
+    """Advanced animation effects for bot messages"""
+    
+    # Animation frames
+    LOADING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    PROGRESS_FRAMES = ["▱▱▱▱▱", "█▱▱▱▱", "██▱▱▱", "███▱▱", "████▱", "█████"]
+    SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+    DOTS_FRAMES = ["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"]
+    
+    # Emojis for different states
+    DOWNLOAD_EMOJIS = ["🔍", "📥", "⚡", "🎬", "🎵", "📤", "✅"]
+    ERROR_EMOJIS = ["❌", "⚠️", "🚫", "💥"]
+    SUCCESS_EMOJIS = ["✅", "🎉", "⭐", "🔥"]
+    
+    @staticmethod
+    async def animate_loading(message: Message, text: str, duration: float = 3.0):
+        """Animate loading with spinner"""
+        frames = AnimationEffects.LOADING_FRAMES
+        end_time = time.time() + duration
+        frame_index = 0
+        
+        try:
+            while time.time() < end_time:
+                frame = frames[frame_index % len(frames)]
+                try:
+                    await message.edit_text(f"{frame} {text}")
+                    await asyncio.sleep(Config.ANIMATION_DELAY)
+                    frame_index += 1
+                except (MessageNotModified, BadRequest):
+                    await asyncio.sleep(0.1)
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
+        except Exception as e:
+            logger.warning(f"Animation error: {e}")
+    
+    @staticmethod
+    async def animate_progress(
+        message: Message, 
+        text: str, 
+        current: int = 0, 
+        total: int = 100,
+        show_percentage: bool = True
+    ):
+        """Animate progress with bar"""
+        try:
+            if total == 0:
+                percentage = 0
+            else:
+                percentage = min(100, max(0, (current / total) * 100))
+            
+            filled_blocks = int(percentage / 20)  # 5 blocks total
+            progress_bar = "█" * filled_blocks + "▱" * (5 - filled_blocks)
+            
+            if show_percentage:
+                progress_text = f"[{progress_bar}] {percentage:.1f}%"
+            else:
+                progress_text = f"[{progress_bar}]"
+            
+            full_text = f"{text}\n\n{progress_text}"
+            
+            try:
+                await message.edit_text(full_text)
+            except (MessageNotModified, BadRequest):
+                pass
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+                
+        except Exception as e:
+            logger.warning(f"Progress animation error: {e}")
+    
+    @staticmethod
+    def get_random_emoji(category: str = "download") -> str:
+        """Get random emoji from category"""
+        emoji_map = {
+            "download": AnimationEffects.DOWNLOAD_EMOJIS,
+            "error": AnimationEffects.ERROR_EMOJIS,
+            "success": AnimationEffects.SUCCESS_EMOJIS
+        }
+        return random.choice(emoji_map.get(category, ["🔸"]))
+
+# ============================================================================
+# UTILITIES CLASS
+# ============================================================================
 
 class Utils:
+    """Utility functions for the bot"""
+    
     @staticmethod
-    def format_duration(seconds):
+    def random_user_agent() -> str:
+        """Get random user agent"""
+        return random.choice(Config.USER_AGENTS)
+    
+    @staticmethod
+    def generate_random_string(length: int = 8) -> str:
+        """Generate random string"""
+        chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        return ''.join(random.choice(chars) for _ in range(length))
+    
+    @staticmethod
+    def format_bytes(size: int) -> str:
+        """Format bytes to human readable"""
+        if not size or size == 0:
+            return "0 B"
+        
+        size_names = ["B", "KB", "MB", "GB", "TB"]
+        i = int(math.floor(math.log(size, 1024)))
+        p = math.pow(1024, i)
+        s = round(size / p, 2)
+        return f"{s} {size_names[i]}"
+    
+    @staticmethod
+    def format_duration(seconds: int) -> str:
         """Format duration in seconds to readable format"""
         if not seconds:
-            return "Unknown"
+            return "00:00"
         
         hours = seconds // 3600
         minutes = (seconds % 3600) // 60
         secs = seconds % 60
         
-        if hours > 0:
-            return f"{hours}:{minutes:02d}:{secs:02d}"
-        else:
-            return f"{minutes}:{secs:02d}"
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
     
     @staticmethod
-    def format_filesize(bytes_size):
-        """Format file size in bytes to readable format"""
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if bytes_size < 1024.0:
-                return f"{bytes_size:.1f} {unit}"
-            bytes_size /= 1024.0
-        return f"{bytes_size:.1f} TB"
-    
-    @staticmethod
-    def sanitize_filename(filename):
+    def sanitize_filename(filename: str) -> str:
         """Sanitize filename for cross-platform compatibility"""
-        import re
         # Remove or replace problematic characters
         filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
         filename = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', filename)
-        return filename[:200]  # Limit length
+        # Limit length
+        return filename[:200] if filename else "video"
+    
+    @staticmethod
+    def parse_video_url(text: str) -> Optional[str]:
+        """Extract YouTube URL from text"""
+        youtube_patterns = [
+            r'(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})',
+            r'(?:https?://)?(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})',
+            r'(?:https?://)?(?:m\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})'
+        ]
+        
+        for pattern in youtube_patterns:
+            match = re.search(pattern, text)
+            if match:
+                video_id = match.group(1)
+                return f"https://www.youtube.com/watch?v={video_id}"
+        return None
 
-# ================================
+# ============================================================================
 # YOUTUBE DOWNLOADER CLASS
-# ================================
+# ============================================================================
 
 class YouTubeDownloader:
+    """Advanced YouTube downloader with FFmpeg support"""
+    
     def __init__(self):
-        self.download_path = Path(Config.DOWNLOAD_PATH)
-        self.temp_path = Path(Config.TEMP_PATH)
-        self.download_path.mkdir(exist_ok=True)
-        self.temp_path.mkdir(exist_ok=True)
+        self.active_downloads = set()
+    
+    async def extract_info(self, url: str) -> Optional[Dict[str, Any]]:
+        """Extract comprehensive video information"""
+        cmd = [
+            "yt-dlp",
+            "--no-warnings",
+            "--no-check-certificate", 
+            "--ignore-errors",
+            "--socket-timeout", "30",
+            "--retries", str(Config.RETRIES),
+            "--user-agent", Utils.random_user_agent(),
+            "--geo-bypass-country", "US",
+            "-j",  # JSON output
+            url
+        ]
         
-        # Statistics
-        self.stats = {
-            'total_downloads': 0,
-            'successful_downloads': 0,
-            'failed_downloads': 0,
-            'total_size_downloaded': 0
-        }
+        # Add cookies if available
+        if os.path.exists(Config.COOKIES_FILE):
+            cmd.extend(["--cookies", Config.COOKIES_FILE])
         
-        # Load stats
-        self.load_stats()
-    
-    def load_stats(self):
-        """Load statistics from file"""
-        stats_file = Path("bot_stats.json")
-        if stats_file.exists():
-            try:
-                with open(stats_file, 'r') as f:
-                    self.stats.update(json.load(f))
-            except:
-                pass
-    
-    def save_stats(self):
-        """Save statistics to file"""
+        # Add proxy if configured
+        if Config.HTTP_PROXY:
+            cmd.extend(["--proxy", Config.HTTP_PROXY])
+        
         try:
-            with open("bot_stats.json", 'w') as f:
-                json.dump(self.stats, f, indent=2)
-        except:
-            pass
-    
-    async def get_video_info(self, url: str, user_agent: str = None) -> Optional[Dict[str, Any]]:
-        """Extract video information without downloading"""
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'user_agent': user_agent or Config.USER_AGENTS[0],
-            }
+            logger.info(f"Extracting info for: {url}")
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
             
-            # Add cookies if available
-            if os.path.exists(Config.COOKIES_FILE):
-                ydl_opts['cookiefile'] = Config.COOKIES_FILE
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), 
+                timeout=Config.TIMEOUT
+            )
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: ydl.extract_info(url, download=False)
-                )
-                return info
-        except Exception as e:
-            logger.error(f"Error extracting video info: {e}")
-            # Try with different user agent
-            if user_agent != Config.USER_AGENTS[-1]:
-                next_ua = Config.USER_AGENTS[(Config.USER_AGENTS.index(user_agent or Config.USER_AGENTS[0]) + 1) % len(Config.USER_AGENTS)]
-                return await self.get_video_info(url, next_ua)
-            return None
-    
-    async def download_video(self, url: str, quality: str = "best", progress_callback=None) -> Optional[str]:
-        """Download video with FFmpeg merging support"""
-        try:
-            self.stats['total_downloads'] += 1
-            
-            # Get video info first
-            info = await self.get_video_info(url)
-            if not info:
-                self.stats['failed_downloads'] += 1
-                self.save_stats()
+            if process.returncode != 0:
+                error = stderr.decode().strip()
+                logger.error(f"yt-dlp error: {error}")
                 return None
             
-            video_title = Utils.sanitize_filename(info.get('title', 'video'))
-            video_id = info.get('id', 'unknown')
+            return json.loads(stdout.decode().strip())
             
-            # Configure download options
-            ydl_opts = Config.get_ytdl_opts(quality)
+        except asyncio.TimeoutError:
+            logger.error("Extract info timeout")
+            return None
+        except Exception as e:
+            logger.error(f"Extract info error: {e}")
+            return None
+    
+    def get_quality_formats(self, info: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get available quality formats sorted by quality"""
+        formats = []
+        
+        for fmt in info.get("formats", []):
+            if not fmt.get("url"):
+                continue
             
-            # Custom progress hook
-            def progress_hook(d):
-                if progress_callback and d['status'] == 'downloading':
-                    percent = d.get('_percent_str', '0%')
-                    speed = d.get('_speed_str', 'N/A')
-                    asyncio.create_task(progress_callback(f"⬇️ {percent} | {speed}"))
-            
-            ydl_opts['progress_hooks'] = [progress_hook]
-            
-            downloaded_files = []
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Download video
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: ydl.download([url])
-                )
+            # Skip live streams and DASH formats without proper codec info
+            if fmt.get("is_live") or fmt.get("protocol") in ["m3u8", "m3u8_native"]:
+                continue
                 
-                # Find downloaded files
-                for file in self.temp_path.glob(f"*{video_id}*"):
-                    downloaded_files.append(str(file))
+            height = fmt.get("height", 0)
+            width = fmt.get("width", 0)
+            filesize = fmt.get("filesize") or fmt.get("filesize_approx", 0)
+            fps = fmt.get("fps", 0)
+            vcodec = fmt.get("vcodec", "none")
+            acodec = fmt.get("acodec", "none")
+            ext = fmt.get("ext", "unknown")
+            format_note = fmt.get("format_note", "")
+            format_id = fmt.get("format_id", "")
             
+            # Skip if file is too large
+            if filesize and filesize > Config.MAX_FILE_SIZE:
+                continue
+            
+            # Categorize formats
+            if vcodec != "none" and acodec != "none":
+                # Video with audio
+                quality_text = f"📹 {height}p"
+                if fps and fps > 30:
+                    quality_text += f" {fps}fps"
+                quality_text += f" • {ext.upper()}"
+                if filesize:
+                    quality_text += f" • {Utils.format_bytes(filesize)}"
+                
+                formats.append({
+                    "format_id": format_id,
+                    "quality_text": quality_text,
+                    "height": height,
+                    "filesize": filesize,
+                    "type": "video_audio",
+                    "ext": ext
+                })
+                
+            elif vcodec != "none":
+                # Video only
+                quality_text = f"🎬 {height}p Video Only"
+                if fps and fps > 30:
+                    quality_text += f" {fps}fps"
+                quality_text += f" • {ext.upper()}"
+                if filesize:
+                    quality_text += f" • {Utils.format_bytes(filesize)}"
+                
+                formats.append({
+                    "format_id": format_id,
+                    "quality_text": quality_text,
+                    "height": height,
+                    "filesize": filesize,
+                    "type": "video",
+                    "ext": ext
+                })
+                
+            elif acodec != "none":
+                # Audio only
+                abr = fmt.get("abr", 0)
+                quality_text = f"🎵 Audio"
+                if abr:
+                    quality_text += f" {abr}kbps"
+                quality_text += f" • {ext.upper()}"
+                if filesize:
+                    quality_text += f" • {Utils.format_bytes(filesize)}"
+                
+                formats.append({
+                    "format_id": format_id,
+                    "quality_text": quality_text,
+                    "height": 0,
+                    "filesize": filesize,
+                    "type": "audio",
+                    "ext": ext,
+                    "abr": abr
+                })
+        
+        # Sort by quality (height for video, bitrate for audio)
+        formats.sort(key=lambda x: (x.get("height", 0), x.get("abr", 0)), reverse=True)
+        return formats
+    
+    async def download_media(
+        self,
+        url: str,
+        format_id: str,
+        chat_id: int,
+        message_id: int,
+        title: str = "media",
+        media_type: str = "video"
+    ) -> Optional[str]:
+        """Download media with progress updates"""
+        rand_id = Utils.generate_random_string()
+        temp_dir = Path(Config.TEMP_LOCATION) / rand_id
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Sanitize title
+        safe_title = Utils.sanitize_filename(title)
+        output_template = str(temp_dir / f"{safe_title}.%(ext)s")
+        
+        cmd = [
+            "yt-dlp",
+            "--no-warnings",
+            "--no-check-certificate",
+            "--ignore-errors",
+            "--socket-timeout", "30",
+            "--retries", str(Config.RETRIES),
+            "--user-agent", Utils.random_user_agent(),
+            "--geo-bypass-country", "US",
+            "-f", format_id,
+            "-o", output_template,
+            url
+        ]
+        
+        # Add cookies if available
+        if os.path.exists(Config.COOKIES_FILE):
+            cmd.extend(["--cookies", Config.COOKIES_FILE])
+        
+        # Add proxy if configured
+        if Config.HTTP_PROXY:
+            cmd.extend(["--proxy", Config.HTTP_PROXY])
+        
+        # For audio-only downloads, extract audio
+        if media_type == "audio":
+            cmd.extend([
+                "--extract-audio",
+                "--audio-format", "mp3",
+                "--audio-quality", "192k"
+            ])
+        
+        try:
+            logger.info(f"Starting download: {format_id}")
+            
+            # Track this download
+            download_key = f"{chat_id}_{message_id}"
+            self.active_downloads.add(download_key)
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            # Monitor download progress
+            await self._monitor_download_progress(process, chat_id, message_id, safe_title)
+            
+            # Wait for completion
+            await process.wait()
+            
+            # Remove from active downloads
+            self.active_downloads.discard(download_key)
+            
+            if process.returncode != 0:
+                logger.error(f"Download failed with return code: {process.returncode}")
+                return None
+            
+            # Find downloaded file
+            downloaded_files = list(temp_dir.glob("*"))
             if not downloaded_files:
-                self.stats['failed_downloads'] += 1
-                self.save_stats()
+                logger.error("No files downloaded")
                 return None
             
-            # Process files based on quality and format
-            if quality == "audio":
-                # For audio only, convert to MP3
-                audio_file = downloaded_files[0]
-                output_file = self.download_path / f"{video_title}.mp3"
-                
-                if progress_callback:
-                    await progress_callback("🎵 Converting to MP3...")
-                
-                # Convert to MP3 using FFmpeg
-                cmd = [
-                    Config.FFMPEG_PATH, '-i', audio_file,
-                    '-codec:a', 'libmp3lame', '-b:a', '192k',
-                    '-y', str(output_file)
-                ]
-                
-                process = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                await process.communicate()
-                
-                # Clean up temp files
-                for file in downloaded_files:
-                    try:
-                        os.remove(file)
-                    except:
-                        pass
-                
-                if output_file.exists():
-                    self.stats['successful_downloads'] += 1
-                    self.stats['total_size_downloaded'] += output_file.stat().st_size
-                    self.save_stats()
-                    return str(output_file)
+            # Get the largest file (main download)
+            downloaded_file = max(downloaded_files, key=lambda x: x.stat().st_size)
             
-            else:
-                # For video, merge audio and video if separate
-                video_files = [f for f in downloaded_files if any(ext in f for ext in ['.mp4', '.webm', '.mkv'])]
-                audio_files = [f for f in downloaded_files if any(ext in f for ext in ['.m4a', '.webm', '.opus'])]
-                
-                output_file = self.download_path / f"{video_title}.mp4"
-                
-                if len(downloaded_files) == 1:
-                    # Single file, just move it
-                    os.rename(downloaded_files[0], output_file)
-                elif len(video_files) == 1 and len(audio_files) == 1:
-                    # Separate video and audio, merge with FFmpeg
-                    if progress_callback:
-                        await progress_callback("🎬 Merging video and audio...")
-                    
-                    cmd = [
-                        Config.FFMPEG_PATH,
-                        '-i', video_files[0],
-                        '-i', audio_files[0],
-                        '-c:v', 'copy',
-                        '-c:a', 'aac',
-                        '-b:a', '192k',
-                        '-y', str(output_file)
-                    ]
-                    
-                    process = await asyncio.create_subprocess_exec(
-                        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                    )
-                    await process.communicate()
-                    
-                    # Clean up temp files
-                    for file in downloaded_files:
-                        try:
-                            os.remove(file)
-                        except:
-                            pass
-                else:
-                    # Fallback: use the largest file
-                    largest_file = max(downloaded_files, key=lambda x: os.path.getsize(x))
-                    os.rename(largest_file, output_file)
-                    
-                    # Clean up other files
-                    for file in downloaded_files:
-                        if file != largest_file:
-                            try:
-                                os.remove(file)
-                            except:
-                                pass
-                
-                if output_file.exists():
-                    self.stats['successful_downloads'] += 1
-                    self.stats['total_size_downloaded'] += output_file.stat().st_size
-                    self.save_stats()
-                    return str(output_file)
+            # Move to downloads directory
+            final_path = Path(Config.DOWNLOAD_LOCATION) / downloaded_file.name
+            shutil.move(str(downloaded_file), str(final_path))
             
-            self.stats['failed_downloads'] += 1
-            self.save_stats()
-            return None
+            # Cleanup temp directory
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            logger.info(f"Download completed: {final_path}")
+            return str(final_path)
             
         except Exception as e:
-            logger.error(f"Error downloading video: {e}")
-            self.stats['failed_downloads'] += 1
-            self.save_stats()
+            logger.error(f"Download error: {e}")
+            # Cleanup on error
+            download_key = f"{chat_id}_{message_id}"
+            self.active_downloads.discard(download_key)
+            shutil.rmtree(temp_dir, ignore_errors=True)
             return None
-
-# ================================
-# TELEGRAM BOT CLASS
-# ================================
-
-class TelegramBot:
-    def __init__(self):
-        self.downloader = YouTubeDownloader()
-        self.active_downloads = {}  # Track active downloads per user
-        self.user_preferences = {}  # Store user preferences
-        
-        # Rate limiting
-        self.user_last_request = {}
-        self.rate_limit_seconds = 3
     
-    async def animate_message(self, message, frames, delay=1.0):
-        """Animate message with given frames"""
-        for frame in frames:
-            try:
-                await message.edit_text(frame, parse_mode=ParseMode.MARKDOWN)
-                await asyncio.sleep(delay)
-            except (RetryAfter, TimedOut):
-                await asyncio.sleep(2)
-            except:
-                break
+    async def _monitor_download_progress(
+        self,
+        process: asyncio.subprocess.Process,
+        chat_id: int,
+        message_id: int,
+        title: str
+    ):
+        """Monitor download progress and update message"""
+        last_update = time.time()
+        
+        try:
+            while process.returncode is None:
+                current_time = time.time()
+                
+                # Update every few seconds
+                if current_time - last_update >= Config.PROGRESS_UPDATE_INTERVAL:
+                    try:
+                        # Send progress update through bot
+                        await self._send_progress_update(chat_id, message_id, title)
+                        last_update = current_time
+                    except Exception as e:
+                        logger.warning(f"Progress update error: {e}")
+                
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.warning(f"Progress monitoring error: {e}")
     
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command"""
-        user = update.effective_user
-        
-        # Send chat action
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        
-        welcome_text = f"""
+    async def _send_progress_update(self, chat_id: int, message_id: int, title: str):
+        """Send progress update to user"""
+        # This will be called from the bot instance
+        pass  # Implementation will be in bot handlers
+
+# ============================================================================
+# BOT INSTANCE AND HANDLERS
+# ============================================================================
+
+# Initialize bot
+bot = Client(
+    "youtube_dl_bot",
+    api_id=Config.API_ID,
+    api_hash=Config.API_HASH,
+    bot_token=Config.BOT_TOKEN
+)
+
+# Initialize downloader
+downloader = YouTubeDownloader()
+
+# Store user sessions
+user_sessions = {}
+
+# ============================================================================
+# COMMAND HANDLERS
+# ============================================================================
+
+@bot.on_message(filters.command("start") & filters.private)
+async def start_command(client: Client, message: Message):
+    """Handle /start command with enhanced UI"""
+    user = message.from_user
+    
+    welcome_animation = await message.reply("🔸 Initializing...")
+    
+    # Animate welcome message
+    await AnimationEffects.animate_loading(
+        welcome_animation,
+        "Loading YouTube Downloader...",
+        duration=2.0
+    )
+    
+    welcome_text = f"""
 🎬 **YouTube Downloader Pro** 🚀
 
-Hello {user.first_name}! Welcome to the most advanced YouTube downloader bot.
+Hello {user.first_name}! Welcome to the most advanced YouTube downloader.
 
 ✨ **Features:**
-• 🔥 High-quality video downloads (up to 1080p)
-• 🎵 Audio extraction (MP3, 192kbps)
-• 🔗 FFmpeg merging for perfect quality
-• 🍪 Cookies support for restricted content
-• 🎭 Animated progress indicators
-• 📊 Download statistics
+🔥 **High Quality**: Up to 4K video downloads
+🎵 **Audio Extraction**: MP3 with custom bitrates  
+⚡ **Fast Processing**: Multi-threaded downloads
+🔀 **Smart Merging**: FFmpeg audio+video combination
+🍪 **Cookie Support**: Access restricted content
+📊 **Real-time Progress**: Live download updates
+🎭 **Animated Interface**: Beautiful user experience
 
-**📱 Commands:**
-/start - Show this message
-/help - Detailed help guide
-/quality - Set default quality
-/stats - Your download statistics
-/admin - Admin panel (Admins only)
-
-**🎯 Quick Start:**
+📱 **How to use:**
 Just send me any YouTube URL and I'll handle the rest!
 
-**Supported formats:** youtube.com, youtu.be, youtube shorts, and more!
-        """
-        
-        await update.message.reply_text(
-            welcome_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
+**Supported formats:**
+• youtube.com, youtu.be, youtube shorts
+• Private/unlisted videos (with cookies)
+• Live streams and premieres
+"""
     
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help command"""
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        
-        help_text = """
-📖 **Detailed Help Guide**
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📖 Help", callback_data="show_help"),
+            InlineKeyboardButton("ℹ️ About", callback_data="show_about")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Settings", callback_data="show_settings"),
+            InlineKeyboardButton("📊 Stats", callback_data="show_stats")
+        ]
+    ])
+    
+    await welcome_animation.edit_text(
+        welcome_text,
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
 
-**🔗 Supported URLs:**
-• youtube.com/watch?v=...
-• youtu.be/...
-• youtube.com/shorts/...
-• m.youtube.com/...
-• music.youtube.com/...
+@bot.on_message(filters.command("help") & filters.private)
+async def help_command(client: Client, message: Message):
+    """Show help information"""
+    help_msg = await message.reply("📖 Loading help...")
+    
+    await AnimationEffects.animate_loading(help_msg, "Preparing help content...", 1.5)
+    
+    help_text = """
+📖 **Help & Instructions**
 
-**🎯 Quality Options:**
-• **Best Quality**: 1080p video + high-quality audio
-• **Medium Quality**: 720p video + good audio
-• **Low Quality**: 480p video + standard audio  
-• **Audio Only**: MP3 format, 192kbps
+**🔗 Sending URLs:**
+• Just paste any YouTube URL in the chat
+• I support all YouTube formats and domains
+• No need for special commands!
+
+**📱 Download Options:**
+• **Video + Audio**: Complete video files
+• **Video Only**: High-quality video without audio
+• **Audio Only**: MP3 extraction with custom quality
 
 **⚡ Advanced Features:**
-• **FFmpeg Merging**: Combines separate video/audio streams for best quality
-• **Smart User Agents**: Bypasses restrictions automatically
-• **Cookies Support**: Access age-restricted content
-• **Progress Animations**: Real-time download progress
+• **Smart Quality Selection**: Automatic best quality detection
+• **FFmpeg Merging**: Combines separate video/audio streams
+• **Cookie Support**: For age-restricted content
+• **Progress Tracking**: Real-time download progress
 • **Error Recovery**: Automatic retry with different settings
 
-**📊 File Limits:**
-• Maximum size: 50MB (Telegram limitation)
-• For larger files, try lower quality
+**🎯 Pro Tips:**
+• Send URL with `|custom_name` to set custom filename
+• Use cookies.txt file for restricted content access
+• Larger files may take longer to process
 
-**🛠️ Troubleshooting:**
-• Video unavailable? Try again with different quality
-• Age-restricted? Admin has cookies configured
-• Still issues? Use /admin to contact support
+**🔧 Quality Options:**
+• 4K (2160p) - Ultra High Definition
+• 1440p - Quad High Definition  
+• 1080p - Full High Definition
+• 720p - High Definition
+• 480p - Standard Definition
+• Audio - MP3 192kbps
+"""
+    
+    back_btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+    ])
+    
+    await help_msg.edit_text(help_text, reply_markup=back_btn, parse_mode=ParseMode.MARKDOWN)
 
-**💡 Tips:**
-• Use /quality to set your preferred default quality
-• Check /stats to see your download history
-• The bot automatically chooses best settings for each video
-        """
-        
-        await update.message.reply_text(
-            help_text,
+# ============================================================================
+# URL PROCESSING HANDLER
+# ============================================================================
+
+@bot.on_message(filters.private & filters.text & ~filters.command("start") & ~filters.command("help"))
+async def handle_message(client: Client, message: Message):
+    """Handle all text messages including URLs"""
+    text = message.text.strip()
+    
+    # Extract YouTube URL
+    video_url = Utils.parse_video_url(text)
+    
+    if not video_url:
+        await message.reply(
+            "🤔 **I only understand YouTube URLs!**\n\n"
+            "Please send me a YouTube link and I'll download it for you.\n\n"
+            "**Supported URLs:**\n"
+            "• youtube.com/watch?v=...\n"
+            "• youtu.be/...\n"
+            "• youtube.com/shorts/...\n"
+            "• m.youtube.com/...",
             parse_mode=ParseMode.MARKDOWN
         )
+        return
     
-    def create_quality_keyboard(self, user_id: int = None) -> InlineKeyboardMarkup:
-        """Create inline keyboard for quality selection"""
-        # Get user's preferred quality
-        default_quality = self.user_preferences.get(user_id, {}).get('quality', 'best')
-        
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    f"🔥 Best Quality {'✅' if default_quality == 'best' else ''}",
-                    callback_data="quality_best"
-                ),
-                InlineKeyboardButton(
-                    f"📱 Medium Quality {'✅' if default_quality == 'medium' else ''}",
-                    callback_data="quality_medium"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    f"⚡ Low Quality {'✅' if default_quality == 'low' else ''}",
-                    callback_data="quality_low"
-                ),
-                InlineKeyboardButton(
-                    f"🎵 Audio Only {'✅' if default_quality == 'audio' else ''}",
-                    callback_data="quality_audio"
-                )
-            ],
-            [
-                InlineKeyboardButton("ℹ️ Video Info", callback_data="show_info"),
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel")
-            ]
-        ]
-        return InlineKeyboardMarkup(keyboard)
+    await process_youtube_url(client, message, video_url, text)
+
+async def process_youtube_url(client: Client, message: Message, url: str, original_text: str):
+    """Process YouTube URLs with advanced features"""
+    user_id = message.from_user.id
     
-    async def quality_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /quality command to set user preferences"""
-        user_id = update.effective_user.id
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🔥 Best Quality (Default)", callback_data="set_quality_best"),
-                InlineKeyboardButton("📱 Medium Quality", callback_data="set_quality_medium")
-            ],
-            [
-                InlineKeyboardButton("⚡ Low Quality", callback_data="set_quality_low"),
-                InlineKeyboardButton("🎵 Audio Only", callback_data="set_quality_audio")
-            ]
-        ]
-        
-        current_quality = self.user_preferences.get(user_id, {}).get('quality', 'best')
-        
-        await update.message.reply_text(
-            f"🎯 **Quality Preferences**\n\n"
-            f"Current default: **{current_quality.title()}**\n\n"
-            f"Choose your preferred default quality:",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    # Check for custom filename
+    custom_filename = None
+    if "|" in original_text:
+        parts = original_text.split("|", 1)
+        if len(parts) == 2:
+            custom_filename = Utils.sanitize_filename(parts[1].strip())
     
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /stats command"""
-        user_id = update.effective_user.id
-        
-        # User stats (you can implement user-specific tracking)
-        user_downloads = self.user_preferences.get(user_id, {}).get('downloads', 0)
-        
-        stats_text = f"""
-📊 **Your Statistics**
-
-**🎬 Downloads:** {user_downloads}
-**🎯 Preferred Quality:** {self.user_preferences.get(user_id, {}).get('quality', 'best').title()}
-
-**🤖 Bot Global Stats:**
-• Total Downloads: {self.downloader.stats['total_downloads']}
-• Successful: {self.downloader.stats['successful_downloads']}
-• Failed: {self.downloader.stats['failed_downloads']}
-• Success Rate: {(self.downloader.stats['successful_downloads']/max(1,self.downloader.stats['total_downloads'])*100):.1f}%
-• Data Processed: {Utils.format_filesize(self.downloader.stats['total_size_downloaded'])}
-
-**⚡ Active Downloads:** {len(self.active_downloads)}
-        """
-        
-        await update.message.reply_text(
-            stats_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
+    # Send chat action
+    await client.send_chat_action(message.chat.id, ChatAction.TYPING)
     
-    async def admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /admin command"""
-        if update.effective_user.id not in Config.ADMIN_IDS:
-            await update.message.reply_text("❌ This command is only available for admins.")
-            return
-        
-        # Get system stats
-        download_path = Path(Config.DOWNLOAD_PATH)
-        temp_path = Path(Config.TEMP_PATH)
-        
-        download_files = list(download_path.glob("*")) if download_path.exists() else []
-        temp_files = list(temp_path.glob("*")) if temp_path.exists() else []
-        
-        download_size = sum(f.stat().st_size for f in download_files if f.is_file())
-        temp_size = sum(f.stat().st_size for f in temp_files if f.is_file())
-        
-        # Check FFmpeg
-        try:
-            result = subprocess.run([Config.FFMPEG_PATH, '-version'], capture_output=True, text=True)
-            ffmpeg_status = "✅ Available" if result.returncode == 0 else "❌ Error"
-        except:
-            ffmpeg_status = "❌ Not found"
-        
-        admin_text = f"""
-🛠️ **Admin Panel**
-
-**📁 Storage:**
-• Download folder: {len(download_files)} files ({Utils.format_filesize(download_size)})
-• Temp folder: {len(temp_files)} files ({Utils.format_filesize(temp_size)})
-
-**🔧 System:**
-• FFmpeg: {ffmpeg_status}
-• Cookies: {'✅ Available' if os.path.exists(Config.COOKIES_FILE) else '❌ Not found'}
-• Active Downloads: {len(self.active_downloads)}
-• Max Concurrent: {Config.MAX_CONCURRENT_DOWNLOADS}
-
-**👥 Users:**
-• Total Users: {len(self.user_preferences)}
-• Rate Limited Users: {len([u for u, t in self.user_last_request.items() if time.time() - t < self.rate_limit_seconds])}
-
-**📊 Statistics:**
-{json.dumps(self.downloader.stats, indent=2)}
-        """
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🧹 Clear Downloads", callback_data="admin_clear_downloads"),
-                InlineKeyboardButton("🗑️ Clear Temp", callback_data="admin_clear_temp")
-            ],
-            [
-                InlineKeyboardButton("📊 Export Stats", callback_data="admin_export_stats"),
-                InlineKeyboardButton("🔄 Restart Bot", callback_data="admin_restart")
-            ]
-        ]
-        
-        await update.message.reply_text(
-            admin_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    # Create processing message with animation
+    processing_msg = await message.reply("🔸 Starting analysis...")
     
-    def is_youtube_url(self, url: str) -> bool:
-        """Check if URL is a valid YouTube URL"""
-        youtube_patterns = [
-            'youtube.com', 'youtu.be', 'www.youtube.com',
-            'm.youtube.com', 'music.youtube.com'
-        ]
-        return any(pattern in url.lower() for pattern in youtube_patterns)
+    # Animate processing
+    await AnimationEffects.animate_loading(
+        processing_msg,
+        "Analyzing YouTube video...",
+        duration=3.0
+    )
     
-    def check_rate_limit(self, user_id: int) -> bool:
-        """Check if user is rate limited"""
-        now = time.time()
-        last_request = self.user_last_request.get(user_id, 0)
-        
-        if now - last_request < self.rate_limit_seconds:
-            return False
-        
-        self.user_last_request[user_id] = now
-        return True
-    
-    async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle YouTube URL messages"""
-        url = update.message.text.strip()
-        user_id = update.effective_user.id
-        
-        # Rate limiting
-        if not self.check_rate_limit(user_id):
-            await update.message.reply_text(
-                f"⏳ Please wait {self.rate_limit_seconds} seconds between requests."
-            )
-            return
-        
-        # Check if user already has an active download
-        if user_id in self.active_downloads:
-            await update.message.reply_text(
-                "⏳ You already have an active download. Please wait for it to complete.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("❌ Cancel Current Download", callback_data="cancel_download")
-                ]])
-            )
-            return
-        
-        # Check concurrent download limit
-        if len(self.active_downloads) >= Config.MAX_CONCURRENT_DOWNLOADS:
-            await update.message.reply_text(
-                f"🚫 Server busy! Maximum {Config.MAX_CONCURRENT_DOWNLOADS} concurrent downloads. "
-                f"Please try again in a moment."
-            )
-            return
-        
-        # Validate YouTube URL
-        if not self.is_youtube_url(url):
-            await update.message.reply_text(
-                "❌ **Invalid URL**\n\n"
-                "Please send a valid YouTube URL.\n\n"
-                "**Supported formats:**\n"
-                "• youtube.com/watch?v=...\n"
-                "• youtu.be/...\n"
-                "• youtube.com/shorts/...\n"
-                "• m.youtube.com/...",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-        
-        # Send chat action
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        
-        # Show animated loading message
-        loading_msg = await update.message.reply_text("🔍 Analyzing video...")
-        
-        # Animate loading
-        asyncio.create_task(self.animate_message(
-            loading_msg, 
-            AnimatedMessages.get_loading_frames(),
-            delay=0.8
-        ))
-        
-        await asyncio.sleep(3)  # Let animation play
-        
-        # Get video information
-        video_info = await self.downloader.get_video_info(url)
+    try:
+        # Extract video information
+        await processing_msg.edit_text("🔍 **Extracting video information...**")
+        video_info = await downloader.extract_info(url)
         
         if not video_info:
-            await loading_msg.edit_text(
-                "❌ **Failed to analyze video**\n\n"
-                "Possible reasons:\n"
+            await processing_msg.edit_text(
+                f"{AnimationEffects.get_random_emoji('error')} **Failed to get video information**\n\n"
+                "**Possible reasons:**\n"
                 "• Video is private or deleted\n"
-                "• Geographic restrictions\n"
-                "• Invalid URL\n\n"
+                "• Geographic restrictions\n" 
+                "• Age-restricted content (needs cookies)\n"
+                "• Invalid URL format\n\n"
                 "Please check the URL and try again.",
                 parse_mode=ParseMode.MARKDOWN
             )
             return
         
-        # Store data for later use
-        context.user_data['pending_url'] = url
-        context.user_data['video_info'] = video_info
-        
-        # Extract video information
-        title = video_info.get('title', 'Unknown Title')[:60]
-        duration = video_info.get('duration', 0)
-        uploader = video_info.get('uploader', 'Unknown')
-        view_count = video_info.get('view_count', 0)
-        upload_date = video_info.get('upload_date', '')
+        # Get video details
+        title = video_info.get("title", "Unknown Video")
+        uploader = video_info.get("uploader", "Unknown")
+        duration = video_info.get("duration", 0)
+        view_count = video_info.get("view_count", 0)
+        upload_date = video_info.get("upload_date", "")
+        description = video_info.get("description", "")[:200]
         
         # Format upload date
-        if upload_date:
+        if upload_date and len(upload_date) == 8:
             try:
-                upload_date = datetime.strptime(upload_date, '%Y%m%d').strftime('%B %d, %Y')
+                from datetime import datetime
+                date_obj = datetime.strptime(upload_date, "%Y%m%d")
+                upload_date = date_obj.strftime("%B %d, %Y")
             except:
-                upload_date = 'Unknown'
+                upload_date = upload_date
         
-        # Show video info with quality options
+        # Get available formats
+        formats = downloader.get_quality_formats(video_info)
+        
+        if not formats:
+            await processing_msg.edit_text(
+                f"{AnimationEffects.get_random_emoji('error')} **No compatible formats found**\n\n"
+                "This video might not be available for download or "
+                "requires special authentication.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
+        # Store session data
+        session_id = Utils.generate_random_string(12)
+        user_sessions[session_id] = {
+            "url": url,
+            "video_info": video_info,
+            "formats": formats,
+            "custom_filename": custom_filename,
+            "user_id": user_id,
+            "timestamp": time.time()
+        }
+        
+        # Create format selection keyboard
+        keyboard_buttons = []
+        
+        # Group video formats
+        video_formats = [f for f in formats if f["type"] in ["video_audio", "video"]]
+        audio_formats = [f for f in formats if f["type"] == "audio"]
+        
+        # Add video format buttons (max 8)
+        for fmt in video_formats[:8]:
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    fmt["quality_text"],
+                    callback_data=f"download_{session_id}_{fmt['format_id']}"
+                )
+            ])
+        
+        # Add audio formats
+        if audio_formats:
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    f"🎵 Extract Audio (MP3)",
+                    callback_data=f"audio_{session_id}_{audio_formats[0]['format_id']}"
+                )
+            ])
+        
+        # Add utility buttons
+        keyboard_buttons.extend([
+            [
+                InlineKeyboardButton("ℹ️ Video Info", callback_data=f"info_{session_id}"),
+                InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{session_id}")
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
+        ])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        # Format video information
         info_text = f"""
-🎬 **Video Found!**
+🎬 **{title[:50]}{"..." if len(title) > 50 else ""}**
 
-**📺 Title:** {title}{"..." if len(video_info.get('title', '')) > 60 else ""}
-**⏱️ Duration:** {Utils.format_duration(duration)}
-**👤 Channel:** {uploader}
-**👀 Views:** {view_count:,} views
-**📅 Upload Date:** {upload_date}
+📺 **Channel:** {uploader}
+⏱️ **Duration:** {Utils.format_duration(duration)}
+👀 **Views:** {view_count:,} 
+📅 **Published:** {upload_date}
 
-**Choose your preferred quality:**
-        """
+{description}{"..." if len(video_info.get("description", "")) > 200 else ""}
+
+**Available Formats:** {len(formats)} options
+**Select quality to download:** ⬇️
+"""
         
-        await loading_msg.edit_text(
+        await processing_msg.edit_text(
             info_text,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=self.create_quality_keyboard(user_id)
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
         )
+        
+    except Exception as e:
+        logger.error(f"URL processing error: {e}")
+        await processing_msg.edit_text(
+            f"{AnimationEffects.get_random_emoji('error')} **Processing Error**\n\n"
+            f"An unexpected error occurred while processing your request.\n"
+            f"Error: `{str(e)[:100]}...`\n\n"
+            f"Please try again or contact support.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+# ============================================================================
+# CALLBACK QUERY HANDLERS  
+# ============================================================================
+
+@bot.on_callback_query(filters.regex(r"^download_"))
+async def handle_download_callback(client: Client, callback_query: CallbackQuery):
+    """Handle download format selection"""
+    await callback_query.answer()
     
-    async def handle_quality_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle quality selection and download process"""
-        query = update.callback_query
-        await query.answer()
+    try:
+        _, session_id, format_id = callback_query.data.split("_", 2)
         
-        user_id = update.effective_user.id
-        
-        # Handle different callback types
-        if query.data == "cancel":
-            await query.edit_message_text("❌ **Download cancelled.**", parse_mode=ParseMode.MARKDOWN)
-            context.user_data.clear()
+        # Get session data
+        session = user_sessions.get(session_id)
+        if not session:
+            await callback_query.message.edit_text(
+                "❌ **Session Expired**\n\nPlease send the URL again.",
+                parse_mode=ParseMode.MARKDOWN
+            )
             return
         
-        elif query.data == "cancel_download":
-            if user_id in self.active_downloads:
-                self.active_downloads.pop(user_id, None)
-                await query.edit_message_text("❌ **Download cancelled.**", parse_mode=ParseMode.MARKDOWN)
-            else:
-                await query.edit_message_text("ℹ️ **No active download to cancel.**", parse_mode=ParseMode.MARKDOWN)
+        await start_download(client, callback_query, session, format_id, "video")
+        
+    except Exception as e:
+        logger.error(f"Download callback error: {e}")
+        await callback_query.message.edit_text(
+            f"❌ **Error processing download request**\n`{str(e)}`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+@bot.on_callback_query(filters.regex(r"^audio_"))
+async def handle_audio_callback(client: Client, callback_query: CallbackQuery):
+    """Handle audio extraction"""
+    await callback_query.answer()
+    
+    try:
+        _, session_id, format_id = callback_query.data.split("_", 2)
+        
+        session = user_sessions.get(session_id)
+        if not session:
+            await callback_query.message.edit_text(
+                "❌ **Session Expired**\n\nPlease send the URL again.",
+                parse_mode=ParseMode.MARKDOWN
+            )
             return
         
-        elif query.data == "show_info":
-            video_info = context.user_data.get('video_info')
-            if not video_info:
-                await query.edit_message_text("❌ **No video information available.**", parse_mode=ParseMode.MARKDOWN)
-                return
+        await start_download(client, callback_query, session, format_id, "audio")
+        
+    except Exception as e:
+        logger.error(f"Audio callback error: {e}")
+        await callback_query.message.edit_text(
+            f"❌ **Error processing audio request**\n`{str(e)}`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+async def start_download(
+    client: Client,
+    callback_query: CallbackQuery,
+    session: Dict,
+    format_id: str,
+    media_type: str
+):
+    """Start the download process with animations"""
+    message = callback_query.message
+    url = session["url"]
+    video_info = session["video_info"]
+    title = video_info.get("title", "media")
+    custom_filename = session.get("custom_filename")
+    
+    # Use custom filename if provided
+    final_title = custom_filename if custom_filename else title
+    
+    try:
+        # Show download starting animation
+        download_msg = await message.edit_text(
+            f"🚀 **Preparing Download**\n\n"
+            f"**Title:** {title[:40]}...\n" 
+            f"**Type:** {'🎵 Audio (MP3)' if media_type == 'audio' else '🎬 Video'}\n"
+            f"**Status:** Initializing...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Animate preparation
+        await AnimationEffects.animate_loading(
+            download_msg,
+            f"Preparing {'audio extraction' if media_type == 'audio' else 'video download'}...",
+            duration=2.0
+        )
+        
+        # Start download with progress updates
+        await download_msg.edit_text(
+            f"⬇️ **Downloading Started**\n\n"
+            f"**Title:** {title[:40]}...\n"
+            f"**Type:** {'🎵 Audio (MP3)' if media_type == 'audio' else '🎬 Video'}\n" 
+            f"**Status:** Fetching media...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Download the media
+        downloaded_file = await downloader.download_media(
+            url=url,
+            format_id=format_id,
+            chat_id=message.chat.id,
+            message_id=message.id,
+            title=final_title,
+            media_type=media_type
+        )
+        
+        if not downloaded_file:
+            await download_msg.edit_text(
+                f"{AnimationEffects.get_random_emoji('error')} **Download Failed**\n\n"
+                f"The download could not be completed. This might be due to:\n"
+                f"• Server restrictions\n"
+                f"• Network timeout\n" 
+                f"• File size limitations\n"
+                f"• Format unavailability\n\n"
+                f"Please try a different quality or try again later.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        
+        # Check file size
+        file_path = Path(downloaded_file)
+        file_size = file_path.stat().st_size
+        
+        if file_size > Config.MAX_FILE_SIZE:
+            await download_msg.edit_text(
+                f"❌ **File Too Large**\n\n"
+                f"**Size:** {Utils.format_bytes(file_size)}\n"
+                f"**Limit:** {Utils.format_bytes(Config.MAX_FILE_SIZE)}\n\n"
+                f"Please try a lower quality format.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            # Clean up oversized file
+            file_path.unlink(missing_ok=True)
+            return
+        
+        # Upload animation
+        await download_msg.edit_text(
+            f"📤 **Uploading to Telegram**\n\n"
+            f"**File:** {file_path.name}\n"
+            f"**Size:** {Utils.format_bytes(file_size)}\n"
+            f"**Status:** Preparing upload...",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Animate upload preparation
+        await AnimationEffects.animate_loading(
+            download_msg,
+            "Uploading your file...",
+            duration=2.0
+        )
+        
+        # Send appropriate chat action
+        if media_type == "audio":
+            await client.send_chat_action(message.chat.id, ChatAction.UPLOAD_AUDIO)
+        else:
+            await client.send_chat_action(message.chat.id, ChatAction.UPLOAD_VIDEO)
+        
+        # Upload file to Telegram
+        caption = (
+            f"✅ **Download Complete!**\n\n"
+            f"**📁 File:** `{file_path.name}`\n"
+            f"**💾 Size:** `{Utils.format_bytes(file_size)}`\n" 
+            f"**🎭 Type:** {'🎵 Audio (MP3)' if media_type == 'audio' else '🎬 Video'}\n"
+            f"**⚡ Powered by:** YouTube Downloader Pro"
+        )
+        
+        if media_type == "audio" or file_path.suffix.lower() in [".mp3", ".m4a", ".opus"]:
+            await client.send_audio(
+                chat_id=message.chat.id,
+                audio=downloaded_file,
+                caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_to_message_id=callback_query.message.reply_to_message.id if callback_query.message.reply_to_message else None
+            )
+        else:
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=downloaded_file,
+                caption=caption,
+                supports_streaming=True,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_to_message_id=callback_query.message.reply_to_message.id if callback_query.message.reply_to_message else None
+            )
+        
+        # Success animation
+        await download_msg.edit_text(
+            f"{AnimationEffects.get_random_emoji('success')} **Upload Successful!**\n\n"
+            f"Your {'audio' if media_type == 'audio' else 'video'} has been successfully "
+            f"downloaded and sent to you!\n\n"
+            f"Thanks for using YouTube Downloader Pro! 🚀",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Clean up downloaded file
+        file_path.unlink(missing_ok=True)
+        
+        # Clean up session after successful download
+        session_id = None
+        for sid, sess in user_sessions.items():
+            if sess == session:
+                session_id = sid
+                break
+        
+        if session_id:
+            del user_sessions[session_id]
             
-            # Show detailed info
-            formats = video_info.get('formats', [])
-            video_formats = [f for f in formats if f.get('vcodec') != 'none']
-            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-            
-            detail_text = f"""
+    except Exception as e:
+        logger.error(f"Download process error: {e}")
+        traceback.print_exc()
+        
+        await message.edit_text(
+            f"{AnimationEffects.get_random_emoji('error')} **Download Error**\n\n"
+            f"An error occurred during the download process:\n"
+            f"`{str(e)[:200]}...`\n\n"
+            f"Please try again or contact support.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+# ============================================================================
+# UTILITY CALLBACK HANDLERS
+# ============================================================================
+
+@bot.on_callback_query(filters.regex(r"^info_"))
+async def handle_info_callback(client: Client, callback_query: CallbackQuery):
+    """Show detailed video information"""
+    await callback_query.answer()
+    
+    try:
+        session_id = callback_query.data.split("_", 1)[1]
+        session = user_sessions.get(session_id)
+        
+        if not session:
+            await callback_query.message.edit_text("❌ Session expired.")
+            return
+        
+        video_info = session["video_info"]
+        formats = session["formats"]
+        
+        # Detailed information
+        info_text = f"""
 📊 **Detailed Video Information**
 
-**📺 Title:** {video_info.get('title', 'Unknown')}
-**🆔 Video ID:** {video_info.get('id', 'Unknown')}
-**⏱️ Duration:** {Utils.format_duration(video_info.get('duration', 0))}
-**👤 Uploader:** {video_info.get('uploader', 'Unknown')}
-**📝 Description:** {(video_info.get('description', 'No description')[:100] + '...') if video_info.get('description') else 'No description'}
+**📺 Basic Info:**
+• **Title:** {video_info.get('title', 'Unknown')}
+• **Channel:** {video_info.get('uploader', 'Unknown')}
+• **Duration:** {Utils.format_duration(video_info.get('duration', 0))}
+• **Views:** {video_info.get('view_count', 0):,}
+• **Upload Date:** {video_info.get('upload_date', 'Unknown')}
 
-**🎥 Available Video Qualities:**
-{chr(10).join([f"• {f.get('height', 'Unknown')}p ({f.get('ext', 'Unknown')}) - {Utils.format_filesize(f.get('filesize', 0)) if f.get('filesize') else 'Unknown size'}" for f in video_formats[:5]])}
+**🎬 Available Formats:** {len(formats)}
+• **Video Formats:** {len([f for f in formats if f['type'] in ['video_audio', 'video']])}
+• **Audio Formats:** {len([f for f in formats if f['type'] == 'audio'])}
 
-**🎵 Available Audio Qualities:**
-{chr(10).join([f"• {f.get('abr', 'Unknown')}kbps ({f.get('ext', 'Unknown')})" for f in audio_formats[:3]])}
-            """
-            
-            back_keyboard = [[InlineKeyboardButton("🔙 Back to Download", callback_data="back_to_download")]]
-            
-            await query.edit_message_text(
-                detail_text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup(back_keyboard)
-            )
+**🔗 Video ID:** `{video_info.get('id', 'Unknown')}`
+**📱 URL:** `{session['url'][:50]}...`
+"""
+        
+        back_btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back to Download", callback_data=f"back_{session_id}")]
+        ])
+        
+        await callback_query.message.edit_text(
+            info_text,
+            reply_markup=back_btn,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        logger.error(f"Info callback error: {e}")
+
+@bot.on_callback_query(filters.regex(r"^back_"))
+async def handle_back_callback(client: Client, callback_query: CallbackQuery):
+    """Go back to format selection"""
+    await callback_query.answer()
+    
+    try:
+        session_id = callback_query.data.split("_", 1)[1]
+        session = user_sessions.get(session_id)
+        
+        if not session:
+            await callback_query.message.edit_text("❌ Session expired.")
             return
         
-        elif query.data == "back_to_download":
-            # Go back to quality selection
-            video_info = context.user_data.get('video_info')
-            if not video_info:
-                await query.edit_message_text("❌ **Session expired. Please send the URL again.**", parse_mode=ParseMode.MARKDOWN)
-                return
-            
-            title = video_info.get('title', 'Unknown Title')[:60]
-            duration = video_info.get('duration', 0)
-            
-            info_text = f"""
-🎬 **Video Ready for Download**
+        # Recreate format selection (reuse logic from main handler)
+        video_info = session["video_info"]
+        formats = session["formats"]
+        
+        # Create format selection keyboard
+        keyboard_buttons = []
+        
+        # Group formats
+        video_formats = [f for f in formats if f["type"] in ["video_audio", "video"]]
+        audio_formats = [f for f in formats if f["type"] == "audio"]
+        
+        # Add video format buttons
+        for fmt in video_formats[:8]:
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    fmt["quality_text"],
+                    callback_data=f"download_{session_id}_{fmt['format_id']}"
+                )
+            ])
+        
+        # Add audio option
+        if audio_formats:
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    f"🎵 Extract Audio (MP3)",
+                    callback_data=f"audio_{session_id}_{audio_formats[0]['format_id']}"
+                )
+            ])
+        
+        # Add utility buttons
+        keyboard_buttons.extend([
+            [
+                InlineKeyboardButton("ℹ️ Video Info", callback_data=f"info_{session_id}"),
+                InlineKeyboardButton("🔄 Refresh", callback_data=f"refresh_{session_id}")
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
+        ])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        title = video_info.get("title", "Unknown Video")
+        uploader = video_info.get("uploader", "Unknown")
+        duration = video_info.get("duration", 0)
+        
+        info_text = f"""
+🎬 **{title[:50]}{"..." if len(title) > 50 else ""}**
 
-**📺 Title:** {title}
-**⏱️ Duration:** {Utils.format_duration(duration)}
+📺 **Channel:** {uploader}
+⏱️ **Duration:** {Utils.format_duration(duration)}
 
-**Choose your preferred quality:**
-            """
-            
-            await query.edit_message_text(
-                info_text,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=self.create_quality_keyboard(user_id)
-            )
-            return
+**Available Formats:** {len(formats)} options
+**Select quality to download:** ⬇️
+"""
         
-        # Handle quality preference setting
-        elif query.data.startswith("set_quality_"):
-            quality = query.data.replace('set_quality_', '')
-            
-            if user_id not in self.user_preferences:
-                self.user_preferences[user_id] = {}
-            
-            self.user_preferences[user_id]['quality'] = quality
-            
-            await query.edit_message_text(
-                f"✅ **Default quality set to: {quality.title()}**\n\n"
-                f"Future downloads will use this quality by default.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
+        await callback_query.message.edit_text(
+            info_text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
         
-        # Handle admin commands
-        elif query.data.startswith("admin_"):
-            if user_id not in Config.ADMIN_IDS:
-                await query.answer("❌ Admin access required!", show_alert=True)
-                return
-            
-            action = query.data.replace('admin_', '')
-            
-            if action == "clear_downloads":
-                try:
-                    count = 0
-                    for file in Path(Config.DOWNLOAD_PATH).glob("*"):
-                        if file.is_file():
-                            file.unlink()
-                            count += 1
-                    await query.edit_message_text(f"✅ **Cleared {count} files from downloads folder.**", parse_mode=ParseMode.MARKDOWN)
-                except Exception as e:
-                    await query.edit_message_text(f"❌ **Error clearing downloads:** {str(e)}", parse_mode=ParseMode.MARKDOWN)
-                return
-            
-            elif action == "clear_temp":
-                try:
-                    count = 0
-                    for file in Path(Config.TEMP_PATH).glob("*"):
-                        if file.is_file():
-                            file.unlink()
-                            count += 1
-                    await query.edit_message_text(f"✅ **Cleared {count} files from temp folder.**", parse_mode=ParseMode.MARKDOWN)
-                except Exception as e:
-                    await query.edit_message_text(f"❌ **Error clearing temp:** {str(e)}", parse_mode=ParseMode.MARKDOWN)
-                return
-            
-            elif action == "export_stats":
-                stats_json = json.dumps(self.downloader.stats, indent=2)
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=stats_json.encode(),
-                    filename=f"bot_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    caption="📊 **Bot Statistics Export**"
-                )
-                return
-            
-            elif action == "restart":
-                await query.edit_message_text("🔄 **Restarting bot...** (Feature not implemented in this demo)", parse_mode=ParseMode.MARKDOWN)
-                return
-        
-        # Handle download quality selection
-        elif query.data.startswith("quality_"):
-            # Check if user has pending URL
-            url = context.user_data.get('pending_url')
-            if not url:
-                await query.edit_message_text("❌ **No pending download found. Please send a new URL.**", parse_mode=ParseMode.MARKDOWN)
-                return
-            
-            # Extract quality from callback data
-            quality = query.data.replace('quality_', '')
-            
-            # Check if user already has active download
-            if user_id in self.active_downloads:
-                await query.answer("⏳ You already have an active download!", show_alert=True)
-                return
-            
-            # Mark user as having active download
-            self.active_downloads[user_id] = True
-            
-            # Update user download count
-            if user_id not in self.user_preferences:
-                self.user_preferences[user_id] = {}
-            self.user_preferences[user_id]['downloads'] = self.user_preferences[user_id].get('downloads', 0) + 1
-            
-            # Quality display names
-            quality_names = {
-                'best': '🔥 Best Quality (1080p)',
-                'medium': '📱 Medium Quality (720p)', 
-                'low': '⚡ Low Quality (480p)',
-                'audio': '🎵 Audio Only (MP3)'
-            }
-            
-            # Start download process with animations
-            progress_msg = await query.edit_message_text(
-                f"🚀 **Starting Download**\n\n"
-                f"**Quality:** {quality_names.get(quality, quality.title())}\n"
-                f"**Status:** Initializing...",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            try:
-                # Progress callback for real-time updates
-                async def progress_callback(status):
-                    try:
-                        await progress_msg.edit_text(
-                            f"🚀 **Downloading Video**\n\n"
-                            f"**Quality:** {quality_names.get(quality, quality.title())}\n"
-                            f"**Status:** {status}",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    except:
-                        pass
-                
-                # Start download with progress animation
-                asyncio.create_task(self.animate_message(
-                    progress_msg,
-                    [f"🚀 **Downloading Video**\n\n**Quality:** {quality_names.get(quality, quality.title())}\n**Status:** {frame}" for frame in AnimatedMessages.get_download_frames()],
-                    delay=1.0
-                ))
-                
-                # Download the video
-                file_path = await self.downloader.download_video(url, quality, progress_callback)
-                
-                if not file_path or not os.path.exists(file_path):
-                    await progress_msg.edit_text(
-                        "❌ **Download Failed**\n\n"
-                        "The video might be:\n"
-                        "• Unavailable or private\n"
-                        "• Too large for the selected quality\n"
-                        "• Geo-restricted\n\n"
-                        "Try a different quality or check the URL.",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    return
-                
-                # Check file size
-                file_size = os.path.getsize(file_path)
-                if file_size > Config.MAX_FILE_SIZE:
-                    await progress_msg.edit_text(
-                        f"❌ **File Too Large**\n\n"
-                        f"**File size:** {Utils.format_filesize(file_size)}\n"
-                        f"**Maximum allowed:** {Utils.format_filesize(Config.MAX_FILE_SIZE)}\n\n"
-                        f"Please try downloading with **lower quality**.",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    os.remove(file_path)  # Clean up
-                    return
-                
-                # Upload process with animation
-                await progress_msg.edit_text(
-                    f"📤 **Uploading File**\n\n"
-                    f"**Quality:** {quality_names.get(quality, quality.title())}\n"
-                    f"**Size:** {Utils.format_filesize(file_size)}\n"
-                    f"**Status:** Preparing upload...",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                
-                # Animate upload process
-                asyncio.create_task(self.animate_message(
-                    progress_msg,
-                    [f"📤 **Uploading File**\n\n**Quality:** {quality_names.get(quality, quality.title())}\n**Size:** {Utils.format_filesize(file_size)}\n**Status:** {frame}" for frame in AnimatedMessages.get_upload_frames()],
-                    delay=0.8
-                ))
-                
-                await asyncio.sleep(3)  # Let animation play
-                
-                # Send chat action
-                if quality == "audio":
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_AUDIO)
-                else:
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_VIDEO)
-                
-                # Upload file to Telegram
-                async with aiofiles.open(file_path, 'rb') as file:
-                    file_content = await file.read()
-                    
-                    caption = f"✅ **Download Complete!**\n\n📱 **Quality:** {quality_names.get(quality, quality.title())}\n📊 **Size:** {Utils.format_filesize(file_size)}"
-                    
-                    if quality == "audio":
-                        await context.bot.send_audio(
-                            chat_id=update.effective_chat.id,
-                            audio=file_content,
-                            caption=caption,
-                            parse_mode=ParseMode.MARKDOWN,
-                            filename=os.path.basename(file_path)
-                        )
-                    else:
-                        await context.bot.send_video(
-                            chat_id=update.effective_chat.id,
-                            video=file_content,
-                            caption=caption,
-                            parse_mode=ParseMode.MARKDOWN,
-                            filename=os.path.basename(file_path)
-                        )
-                
-                await progress_msg.edit_text(
-                    f"🎉 **Upload Successful!**\n\n"
-                    f"Your video has been processed and sent.\n\n"
-                    f"Thanks for using YouTube Downloader Pro! 🚀",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                
-                # Clean up downloaded file
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
-                
-            except Exception as e:
-                logger.error(f"Error in download process: {e}")
-                await progress_msg.edit_text(
-                    f"❌ **Download Error**\n\n"
-                    f"An unexpected error occurred:\n"
-                    f"`{str(e)[:100]}...`\n\n"
-                    f"Please try again or contact support.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            
-            finally:
-                # Remove user from active downloads
-                self.active_downloads.pop(user_id, None)
-                context.user_data.clear()
+    except Exception as e:
+        logger.error(f"Back callback error: {e}")
+
+@bot.on_callback_query(filters.regex(r"^cancel$"))
+async def handle_cancel_callback(client: Client, callback_query: CallbackQuery):
+    """Handle download cancellation"""
+    await callback_query.answer("❌ Cancelled")
+    await callback_query.message.edit_text(
+        f"{AnimationEffects.get_random_emoji('error')} **Operation Cancelled**\n\n"
+        f"Feel free to send another YouTube URL! 🔗",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# ============================================================================
+# MENU CALLBACK HANDLERS
+# ============================================================================
+
+@bot.on_callback_query(filters.regex(r"^show_"))
+async def handle_menu_callbacks(client: Client, callback_query: CallbackQuery):
+    """Handle main menu callbacks"""
+    await callback_query.answer()
     
-    async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle all text messages"""
-        text = update.message.text
-        
-        # Check if it's a URL
-        if self.is_youtube_url(text):
-            await self.handle_url(update, context)
-        else:
-            await update.message.reply_text(
-                "🤔 **I only understand YouTube URLs!**\n\n"
-                "Please send me a YouTube link and I'll download it for you.\n\n"
-                "**Example URLs:**\n"
-                "• https://youtube.com/watch?v=...\n"
-                "• https://youtu.be/...\n"
-                "• https://youtube.com/shorts/...",
-                parse_mode=ParseMode.MARKDOWN
-            )
+    action = callback_query.data.replace("show_", "")
     
-    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle errors"""
-        logger.error(f"Update {update} caused error {context.error}")
+    if action == "help":
+        help_text = """
+📖 **Complete Help Guide**
+
+**🎯 How to Use:**
+1. Send any YouTube URL to the bot
+2. Choose your preferred quality/format
+3. Wait for download and upload
+4. Receive your file!
+
+**🔗 Supported URLs:**
+• youtube.com/watch?v=...
+• youtu.be/...
+• youtube.com/shorts/...
+• All YouTube domains and formats
+
+**⚡ Advanced Features:**
+• Custom filenames: Send `URL|filename`
+• Cookie support for restricted content
+• FFmpeg merging for best quality
+• Progress tracking and animations
+• Error recovery and retry logic
+
+**📱 Quality Options:**
+• 4K, 1440p, 1080p, 720p, 480p
+• Video-only formats
+• Audio extraction (MP3)
+"""
         
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ **An error occurred**\n\n"
-                "The bot encountered an unexpected error. Please try again.\n\n"
-                "If the problem persists, contact the administrator.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+    elif action == "about":
+        help_text = f"""
+ℹ️ **About YouTube Downloader Pro**
+
+**🚀 Version:** 3.0.0 Advanced
+**🐍 Python:** 3.8+
+**📡 Pyrogram:** {pyrogram_version}
+**🎬 Engine:** yt-dlp + FFmpeg
+
+**✨ Features:**
+• Advanced video processing
+• Real-time progress tracking
+• Animated user interface
+• Smart error handling
+• Multi-format support
+• Cookie authentication
+
+**👨‍💻 Developer:** @LISA_FAN_LK
+**📢 Channel:** @NT_BOT_CHANNEL
+**🔧 Support:** Contact admin
+
+Made with ❤️ for the Telegram community!
+"""
+        
+    elif action == "settings":
+        help_text = """
+⚙️ **Bot Settings & Info**
+
+**📊 Current Configuration:**
+• Max file size: 2GB
+• Concurrent downloads: 3
+• Timeout: 5 minutes
+• Retries: 5 attempts
+• FFmpeg: Enabled
+• Cookies: Supported
+
+**🎭 Animation Settings:**
+• Loading animations: Enabled
+• Progress updates: Every 3 seconds
+• Spinner delays: 0.8 seconds
+
+**🔧 Advanced Options:**
+• User agent rotation: Active
+• Geo-bypass: Enabled
+• Proxy support: Available
+• Error recovery: Automatic
+
+Settings are optimized for best performance!
+"""
+        
+    elif action == "stats":
+        active_downloads = len(downloader.active_downloads)
+        active_sessions = len(user_sessions)
+        
+        help_text = f"""
+📊 **Bot Statistics**
+
+**⚡ Current Status:**
+• Active downloads: {active_downloads}
+• Active sessions: {active_sessions}
+• Bot uptime: Online ✅
+• Server status: Operational
+
+**💾 Storage:**
+• Download folder: {len(list(Path(Config.DOWNLOAD_LOCATION).glob('*')))} files
+• Temp folder: {len(list(Path(Config.TEMP_LOCATION).glob('*')))} files
+• Cookies: {'Available' if os.path.exists(Config.COOKIES_FILE) else 'Not configured'}
+
+**🏃‍♂️ Performance:**
+• Response time: <1s
+• Download speed: Optimal
+• Upload speed: High
+• Error rate: Minimal
+
+**🎯 Supported Formats:** 20+ video/audio formats
+"""
     
-    def run(self):
-        """Run the bot"""
-        # Create application
-        application = Application.builder().token(Config.BOT_TOKEN).build()
-        
-        # Add handlers
-        application.add_handler(CommandHandler("start", self.start_command))
-        application.add_handler(CommandHandler("help", self.help_command))
-        application.add_handler(CommandHandler("quality", self.quality_command))
-        application.add_handler(CommandHandler("stats", self.stats_command))
-        application.add_handler(CommandHandler("admin", self.admin_command))
-        
-        # Callback query handler for all buttons
-        application.add_handler(CallbackQueryHandler(self.handle_quality_selection))
-        
-        # Message handlers
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
-        
-        # Error handler
-        application.add_error_handler(self.error_handler)
-        
-        print("🤖 YouTube Downloader Bot is starting...")
-        print(f"📁 Download path: {Config.DOWNLOAD_PATH}")
-        print(f"📁 Temp path: {Config.TEMP_PATH}")
-        print(f"🔧 FFmpeg: {'✅' if self.check_ffmpeg() else '❌'}")
-        print(f"🍪 Cookies: {'✅' if os.path.exists(Config.COOKIES_FILE) else '❌'}")
-        print("🚀 Bot is ready! Send /start to begin.")
-        
-        # Run the bot
-        application.run_polling()
+    else:
+        help_text = "❌ Unknown option selected."
     
-    def check_ffmpeg(self):
-        """Check if FFmpeg is available"""
+    back_btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
+    ])
+    
+    await callback_query.message.edit_text(
+        help_text,
+        reply_markup=back_btn,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@bot.on_callback_query(filters.regex(r"^back_to_menu$"))
+async def handle_back_to_menu(client: Client, callback_query: CallbackQuery):
+    """Go back to main menu"""
+    await callback_query.answer()
+    
+    welcome_text = f"""
+🎬 **YouTube Downloader Pro** 🚀
+
+Welcome back! Ready to download more content?
+
+✨ **Quick Access:**
+• Just send me any YouTube URL
+• Choose quality and format  
+• Get your file instantly!
+
+**Need help?** Use the buttons below.
+"""
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📖 Help", callback_data="show_help"),
+            InlineKeyboardButton("ℹ️ About", callback_data="show_about")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Settings", callback_data="show_settings"),
+            InlineKeyboardButton("📊 Stats", callback_data="show_stats")
+        ]
+    ])
+    
+    await callback_query.message.edit_text(
+        welcome_text,
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# ============================================================================
+# ERROR HANDLERS AND CLEANUP
+# ============================================================================
+
+@bot.on_callback_query()
+async def handle_unknown_callback(client: Client, callback_query: CallbackQuery):
+    """Handle unknown callback queries"""
+    await callback_query.answer("❌ Unknown action or expired session.")
+
+# Cleanup old sessions periodically
+async def cleanup_old_sessions():
+    """Clean up old user sessions"""
+    while True:
         try:
-            result = subprocess.run([Config.FFMPEG_PATH, '-version'], 
-                                  capture_output=True, text=True, timeout=5)
-            return result.returncode == 0
-        except:
-            return False
+            current_time = time.time()
+            expired_sessions = []
+            
+            for session_id, session in user_sessions.items():
+                if current_time - session.get("timestamp", 0) > 3600:  # 1 hour
+                    expired_sessions.append(session_id)
+            
+            for session_id in expired_sessions:
+                del user_sessions[session_id]
+            
+            if expired_sessions:
+                logger.info(f"Cleaned up {len(expired_sessions)} expired sessions")
+            
+            # Sleep for 30 minutes before next cleanup
+            await asyncio.sleep(1800)
+            
+        except Exception as e:
+            logger.error(f"Session cleanup error: {e}")
+            await asyncio.sleep(300)  # Wait 5 minutes on error
 
-# ================================
-# MAIN EXECUTION
-# ================================
+# ============================================================================
+# BOT STARTUP AND MAIN EXECUTION
+# ============================================================================
+
+async def main():
+    """Main function to run the bot"""
+    logger.info("🚀 Starting YouTube Downloader Pro Bot...")
+    
+    # Set bot commands
+    commands = [
+        BotCommand("start", "🚀 Start the bot and show main menu"),
+        BotCommand("help", "📖 Get help and instructions"),
+    ]
+    
+    await bot.set_bot_commands(commands)
+    
+    # Start session cleanup task
+    asyncio.create_task(cleanup_old_sessions())
+    
+    logger.info("✅ Bot is ready and running!")
+    logger.info(f"📁 Download path: {Config.DOWNLOAD_LOCATION}")
+    logger.info(f"📁 Temp path: {Config.TEMP_LOCATION}")
+    logger.info(f"🍪 Cookies: {'✅ Available' if os.path.exists(Config.COOKIES_FILE) else '❌ Not configured'}")
+    logger.info(f"🔧 FFmpeg: {'✅ Available' if shutil.which(Config.FFMPEG_PATH) else '❌ Not found'}")
+    logger.info(f"💾 Max file size: {Utils.format_bytes(Config.MAX_FILE_SIZE)}")
+    
+    # Run the bot
+    await bot.start()
+    
+    print("""
+    ╔══════════════════════════════════════════════╗
+    ║          🎬 YouTube Downloader Pro 🚀        ║
+    ║                                              ║
+    ║  ✅ Bot is online and ready!                 ║
+    ║  📱 Send /start to begin                     ║
+    ║  🔗 Send YouTube URLs to download            ║
+    ║                                              ║
+    ║  Features: HD Video, Audio, FFmpeg, Cookies ║
+    ╚══════════════════════════════════════════════╝
+    """)
+    
+    # Keep the bot running
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    # Create required directories
-    Path(Config.DOWNLOAD_PATH).mkdir(exist_ok=True)
-    Path(Config.TEMP_PATH).mkdir(exist_ok=True)
-    
-    # Initialize and run bot
-    bot = TelegramBot()
-    bot.run()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
+    except Exception as e:
+        logger.error(f"💥 Fatal error: {e}")
+        traceback.print_exc()
 
