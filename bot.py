@@ -35,7 +35,7 @@ class Config:
     # Download Configuration
     DOWNLOAD_PATH: str = "downloads"
     TEMP_PATH: str = "temp"
-    MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB (Telegram limit)
+    MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB in bytes
     MAX_CONCURRENT_DOWNLOADS: int = 3
     
     # Cookies Configuration
